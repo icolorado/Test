@@ -1,0 +1,52 @@
+# Isolated lab for GitHub Actions semantics. No credentials, no cloud, no deployment. The gate `if:` is forced on purpose (S7).
+name: Gate A forced skip
+on:
+  workflow_dispatch:
+    inputs:
+      apply_scope: { required: true, type: string }
+      gate_behaviour: { required: true, type: choice, options: [pass, fail, sleep] }
+permissions: {}
+concurrency: { group: semantics, cancel-in-progress: false }
+jobs:
+  gate_a:
+    if: ${{ false }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - env: { B: "${{ inputs.gate_behaviour }}" }
+        run: |
+          [ "$B" = pass ] && exit 0
+          [ "$B" = fail ] && exit 1
+          sleep 600
+  apply:
+    needs: gate_a
+    if: ${{ !cancelled() && ((inputs.apply_scope == 'trial-request-intake-code' && needs.gate_a.result == 'success') || (inputs.apply_scope != 'trial-request-intake-code' && needs.gate_a.result == 'skipped')) }}
+    runs-on: ubuntu-latest
+    env:
+      IN_APPLY_SCOPE: ${{ inputs.apply_scope }}
+    steps:
+      - name: Guard — Gate A decided this window (S8a)
+        env:
+          GATE_A_RESULT: ${{ needs.gate_a.result }}
+        run: |
+          set -euo pipefail
+          if [ "${IN_APPLY_SCOPE}" = "trial-request-intake-code" ]; then
+            REQUIRED="success"
+          else
+            REQUIRED="skipped"
+          fi
+          if [ "${GATE_A_RESULT}" != "${REQUIRED}" ]; then
+            echo "::error::Gate A: apply_scope=${IN_APPLY_SCOPE} requires gate_a=${REQUIRED}, got '${GATE_A_RESULT}'. Aborting before any credential."
+            exit 1
+          fi
+          echo "OK — apply_scope=${IN_APPLY_SCOPE}, gate_a=${GATE_A_RESULT}."
+          {
+            echo "**Gate A** — \`gate_a=${GATE_A_RESULT}\` for \`apply_scope=${IN_APPLY_SCOPE}\`"
+            echo ""
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      # Checkout happens before the input guard so the guard can call the
+      # shared, unit-tested image-reference validator. Nothing in the checkout
+      # touches AWS; no credential exists yet. The GitHub token is not
+      # persisted in .git/config: nothing here talks to the remote again.
+      - run: echo "apply job passed the guard (nothing else exists here)"
